@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Điểm danh thông minh</title>
+<style>
+:root{--bg:#f4f6fa;--card:#fff;--tx:#1b2430;--mu:#667085;--pr:#2457d6;--ok:#14804a;--er:#c62828;--bd:#dde2ea}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx)}
+header{background:var(--pr);color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+header b{font-size:16px}
+main{max-width:860px;margin:16px auto;padding:0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:14px}
+h2{margin:0 0 10px;font-size:17px}
+label{display:block;font-size:13px;color:var(--mu);margin:8px 0 3px}
+input,select,button{font:inherit;padding:8px 10px;border-radius:7px;border:1px solid var(--bd)}
+input,select{width:100%;background:#fff;color:var(--tx)}
+button{background:var(--pr);color:#fff;border:0;cursor:pointer}
+button.sec{background:#e8ecf4;color:var(--tx)}
+button.dg{background:var(--er)}
+button:disabled{opacity:.5}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+.row>*{flex:1;min-width:110px}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;font-size:14px}
+.tag{padding:2px 8px;border-radius:99px;font-size:12px;background:#e8ecf4}
+.CoMat{background:#d8f3e3;color:var(--ok)}
+.Tre{background:#fff1cf;color:#8a5a00}
+.Vang{background:#fde0e0;color:var(--er)}
+.CoPhep{background:#dde9ff;color:var(--pr)}
+.msg{padding:9px 12px;border-radius:7px;margin:8px 0;display:none}
+.msg.ok{display:block;background:#d8f3e3;color:var(--ok)}
+.msg.er{display:block;background:#fde0e0;color:var(--er)}
+.mu{color:var(--mu);font-size:13px}
+#qr{display:flex;justify-content:center;padding:28px;background:#fff;border:1px solid var(--bd);border-radius:10px}
+video{width:100%;max-width:360px;border-radius:8px;background:#000;display:block;margin-bottom:8px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<header>
+  <b>Điểm danh thông minh</b>
+  <span><span id="who"></span> <button class="sec hide" id="nut-mk">Đổi mật khẩu</button> <button class="sec hide" id="nut-out">Đăng xuất</button></span>
+</header>
+<main id="app"></main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const NHAN = { CoMat: 'Có mặt', Tre: 'Đi muộn', Vang: 'Vắng', CoPhep: 'Có phép' };
+const MUC = { VuotGioiHan: ['Vượt giới hạn', 'Vang'], SatGioiHan: ['Sát giới hạn', 'Tre'], ChuY: ['Cần chú ý', 'Tre'], TyLeThap: ['Chuyên cần thấp', 'Tre'], BinhThuong: ['Bình thường', 'CoMat'] };
+let token = null, user = null, timers = [], stream = null, dangQuet = false, maCu = '', lanCuoi = '';
+
+try { token = sessionStorage.getItem('t'); user = JSON.parse(sessionStorage.getItem('u') || 'null'); } catch {}
+function luu() {
+  try { token ? (sessionStorage.setItem('t', token), sessionStorage.setItem('u', JSON.stringify(user))) : sessionStorage.clear(); } catch {}
+}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function tb(id, text, ok) { const e = document.getElementById(id); if (e) { e.className = 'msg ' + (ok ? 'ok' : 'er'); e.textContent = text; } }
+function dung() { timers.forEach(clearInterval); timers = []; tatCam(); }
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  let d = null; try { d = await r.json(); } catch {}
+  if (r.status === 401 && token) { dangXuat(); throw new Error('Phiên đăng nhập đã hết hạn, hãy đăng nhập lại.'); }
+  if (!r.ok) throw new Error(d?.thongBao || ('Lỗi ' + r.status));
+  return d;
+}
+function viTri() {
+  return new Promise((ok, no) => navigator.geolocation
+    ? navigator.geolocation.getCurrentPosition(p => ok(p.coords), no, { enableHighAccuracy: true, timeout: 15000 })
+    : no(new Error('Trình duyệt không hỗ trợ GPS')));
+}
+const lam7 = x => +x.toFixed(7);
+
+/* ---------- Đăng nhập ---------- */
+function dangXuat() { dung(); token = user = null; luu(); hienDangNhap(); }
+$('#nut-out').onclick = dangXuat;
+$('#nut-mk').onclick = () => hienDoiMatKhau();
+
+function hienDangNhap() {
+  dung();
+  $('#who').textContent = ''; $('#nut-out').classList.add('hide'); $('#nut-mk').classList.add('hide');
+  $('#app').innerHTML = `<div class="card" style="max-width:380px;margin:30px auto">
+    <h2>Đăng nhập</h2>
+    <label>Tên đăng nhập (mã sinh viên / mã giảng viên)</label><input id="tdn" autocomplete="username">
+    <label>Mật khẩu</label><input id="mk" type="password" autocomplete="current-password">
+    <p><button id="vao">Đăng nhập</button></p><div id="m" class="msg"></div></div>`;
+  $('#vao').onclick = dangNhap;
+  $('#mk').onkeydown = e => { if (e.key === 'Enter') dangNhap(); };
+}
+async function dangNhap() {
+  try {
+    const d = await api('/api/auth/dang-nhap', 'POST', { tenDangNhap: $('#tdn').value.trim(), matKhau: $('#mk').value });
+    token = d.token; user = d.nguoiDung; luu(); vaoTrangChu();
+  } catch (e) { tb('m', e.message, false); }
+}
+async function vaoTrangChu() {
+  $('#who').textContent = user.hoTen + ' (' + user.vaiTro + ')';
+  $('#nut-out').classList.remove('hide'); $('#nut-mk').classList.remove('hide');
+  try { user.vaiTro === 'SinhVien' ? await hienSinhVien() : await hienGiangVien(); }
+  catch (e) { $('#app').innerHTML = `<div class="card"><div class="msg er">${esc(e.message)}</div></div>`; }
+}
+
+/* ---------- Đổi mật khẩu ---------- */
+function hienDoiMatKhau() {
+  dung();
+  $('#app').innerHTML = `<div class="card" style="max-width:380px;margin:30px auto">
+    <h2>Đổi mật khẩu</h2>
+    <label>Mật khẩu hiện tại</label><input id="mkc" type="password" autocomplete="current-password">
+    <label>Mật khẩu mới (tối thiểu 8 ký tự, gồm chữ và số)</label><input id="mkm" type="password" autocomplete="new-password">
+    <label>Nhập lại mật khẩu mới</label><input id="mkn" type="password" autocomplete="new-password">
+    <p><button id="luu-mk">Đổi mật khẩu</button> <button class="sec" id="huy-mk">Quay lại</button></p>
+    <div id="m" class="msg"></div></div>`;
+  $('#huy-mk').onclick = () => vaoTrangChu();
+  $('#luu-mk').onclick = async () => {
+    if ($('#mkm').value !== $('#mkn').value) return tb('m', 'Hai mật khẩu mới không khớp.', false);
+    try {
+      const d = await api('/api/auth/doi-mat-khau', 'POST', { matKhauCu: $('#mkc').value, matKhauMoi: $('#mkm').value });
+      tb('m', d.thongBao + ' Lần sau hãy đăng nhập bằng mật khẩu mới.', true);
+      $('#mkc').value = $('#mkm').value = $('#mkn').value = '';
+    } catch (e) { tb('m', e.message, false); }
+  };
+}
+
+/* ---------- Giảng viên / Admin ---------- */
+async function hienGiangVien() {
+  const ds = await api(user.vaiTro === 'Admin' ? '/api/lop-hoc-phan' : '/api/lop-hoc-phan/cua-toi');
+  $('#app').innerHTML = `<div class="card"><h2>Chọn lớp học phần</h2>
+    <select id="lop"><option value="">-- Chọn lớp --</option>${ds.map(l => `<option value="${l.id}">${esc(l.maLop)} - ${esc(l.tenMon)} (${l.siSoHienTai} SV)</option>`).join('')}</select></div>
+    <div id="ct"></div>`;
+  $('#lop').onchange = e => { dung(); e.target.value ? hienBuoi(+e.target.value) : $('#ct').innerHTML = ''; };
+}
+
+async function hienBuoi(lopId) {
+  dung();
+  const ds = await api('/api/buoi-hoc?lopHocPhanId=' + lopId);
+  const hom = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+  $('#ct').innerHTML = `<div class="card"><h2>Các buổi học</h2>
+    <div class="row">
+      <div><label>Ngày học</label><input type="date" id="ngay" value="${hom}"></div>
+      <div><label>Bán kính cho phép (m)</label><input type="number" id="bk" value="100"></div>
+      <div><label>Đổi mã QR mỗi (giây)</label><input type="number" id="ck" value="30"></div>
+      <button id="tao" style="flex:0 0 auto">Tạo buổi mới</button>
+    </div><div id="m" class="msg"></div>
+    <table><tr><th>Buổi</th><th>Ngày</th><th>Trạng thái</th><th>Đã điểm danh</th><th></th></tr>
+    ${ds.map(b => `<tr><td>${b.soBuoi}</td><td>${b.ngayHoc}</td><td>${esc(b.trangThai)}</td><td>${b.daDiemDanh}/${b.tongSinhVien}</td>
+      <td>${b.trangThai === 'ChuaMo' ? `<button data-mo="${b.id}">Mở buổi</button>` : `<button class="sec" data-xem="${b.id}">Xem</button>`}</td></tr>`).join('')
+      || '<tr><td colspan="5" class="mu">Chưa có buổi học nào.</td></tr>'}
+    </table><p><button class="sec" id="tk">Thống kê chuyên cần và cảnh báo</button> <button class="sec" id="nd">Nhập điểm</button></p></div><div id="live"></div>`;
+  $('#tao').onclick = async () => {
+    try {
+      await api('/api/buoi-hoc', 'POST', { lopHocPhanId: lopId, ngayHoc: $('#ngay').value, banKinhChoPhep: +$('#bk').value, thoiGianDoiQR: +$('#ck').value });
+      hienBuoi(lopId);
+    } catch (e) { tb('m', e.message, false); }
+  };
+  document.querySelectorAll('[data-mo]').forEach(b => b.onclick = () => moBuoi(+b.dataset.mo, lopId));
+  document.querySelectorAll('[data-xem]').forEach(b => b.onclick = () => xemBuoi(+b.dataset.xem, lopId));
+  $('#tk').onclick = () => xemThongKe(lopId);
+  $('#nd').onclick = () => xemDiem(lopId);
+}
+
+async function moBuoi(id, lopId) {
+  let body = {};
+  try { const p = await viTri(); body = { viDoPhong: lam7(p.latitude), kinhDoPhong: lam7(p.longitude) }; }
+  catch { if (!confirm('Không lấy được vị trí GPS. Mở buổi mà KHÔNG kiểm tra vị trí của sinh viên?')) return; }
+  try { await api(`/api/buoi-hoc/${id}/mo`, 'POST', body); xemBuoi(id, lopId); }
+  catch (e) { tb('m', e.message, false); }
+}
+
+async function xemBuoi(id, lopId) {
+  dung(); maCu = ''; lanCuoi = '';
+  $('#live').innerHTML = `<div class="card"><h2>Buổi học đang xem</h2>
+    <div id="qrbox" class="hide"><div id="qr"></div>
+      <p class="mu">Mã QR tự đổi sau <b id="dem">-</b> giây. Chiếu màn hình này cho sinh viên quét.</p>
+      <p class="mu" style="word-break:break-all"><span id="ma"></span> <button class="sec" id="cp">Sao chép mã</button></p></div>
+    <div id="dd"></div></div>`;
+  $('#cp').onclick = () => navigator.clipboard?.writeText($('#ma').textContent);
+  const capNhat = async () => {
+    try {
+      const d = await api(`/api/buoi-hoc/${id}/diem-danh`);
+      const dangMo = d.buoi.trangThai === 'DangMo';
+      $('#qrbox').classList.toggle('hide', !dangMo);
+      const s = JSON.stringify(d); if (s === lanCuoi) return; lanCuoi = s;
+      const t = d.thongKe;
+      $('#dd').innerHTML = `<p>Buổi ${d.buoi.soBuoi} · <b>${esc(d.buoi.trangThai)}</b> · Có mặt ${t.coMat} · Muộn ${t.tre} · Vắng ${t.vang} · Có phép ${t.coPhep} / ${t.tong}</p>
+        ${dangMo ? '<button class="dg" id="dong">Đóng buổi</button>' : ''}
+        <table><tr><th>Mã SV</th><th>Họ tên</th><th>Trạng thái</th><th>Thời gian / khoảng cách</th></tr>
+        ${d.danhSach.map(x => `<tr><td>${esc(x.maSinhVien)}</td><td>${esc(x.hoTen)}</td>
+          <td><select data-sv="${x.sinhVienId}">${Object.keys(NHAN).map(k => `<option value="${k}" ${k === x.trangThai ? 'selected' : ''}>${NHAN[k]}</option>`).join('')}</select></td>
+          <td class="mu">${x.thoiGianQuet ? new Date(x.thoiGianQuet).toLocaleTimeString('vi-VN') : ''} ${x.khoangCach != null ? Math.round(x.khoangCach) + ' m' : ''}</td></tr>`).join('')}</table>`;
+      document.querySelectorAll('[data-sv]').forEach(sel => sel.onchange = async () => {
+        try { await api(`/api/buoi-hoc/${id}/diem-danh/${sel.dataset.sv}`, 'PUT', { trangThai: sel.value }); lanCuoi = ''; capNhat(); }
+        catch (e) { alert(e.message); }
+      });
+      const nutDong = $('#dong');
+      if (nutDong) nutDong.onclick = async () => {
+        if (!confirm('Đóng buổi học? Mã QR sẽ hết hiệu lực ngay.')) return;
+        try { await api(`/api/buoi-hoc/${id}/dong`, 'POST'); hienBuoi(lopId); } catch (e) { alert(e.message); }
+      };
+    } catch {}
+  };
+  const capNhatQr = async () => {
+    if ($('#qrbox').classList.contains('hide')) return;
+    try {
+      const q = await api(`/api/buoi-hoc/${id}/qr`);
+      if (q.maQr !== maCu) { maCu = q.maQr; $('#qr').innerHTML = ''; new QRCode($('#qr'), { text: q.maQr, width: 300, height: 300, correctLevel: QRCode.CorrectLevel.M }); }
+      $('#ma').textContent = q.maQr; $('#dem').textContent = q.doiSauGiay;
+    } catch {}
+  };
+  await capNhat(); await capNhatQr();
+  timers.push(setInterval(capNhat, 5000), setInterval(capNhatQr, 2000));
+}
+
+/* ---------- Thống kê chuyên cần (giảng viên) ---------- */
+async function xemThongKe(lopId) {
+  dung();
+  let d;
+  try { d = await api(`/api/thong-ke/lop/${lopId}/chuyen-can`); }
+  catch (e) { $('#live').innerHTML = `<div class="card"><div class="msg er">${esc(e.message)}</div></div>`; return; }
+  const t = d.tongKet;
+  $('#live').innerHTML = `<div class="card"><h2>Thống kê chuyên cần - ${esc(d.lop.maLop)} ${esc(d.lop.tenMon)}</h2>
+    <p>Giới hạn vắng: <b>${d.lop.soBuoiVangToiDa}</b> buổi · ${t.soSinhVien} sinh viên · Chuyên cần trung bình <b>${t.tyLeTrungBinh}%</b></p>
+    <p>Vượt giới hạn <b>${t.vuot}</b> · Sát giới hạn <b>${t.sat}</b> · Cần chú ý <b>${t.chuY}</b> · Chuyên cần thấp <b>${t.tyLeThap}</b></p>
+    <h2 style="margin-top:14px">Tỷ lệ có mặt theo buổi</h2>
+    ${d.theoBuoi.map(b => `<div style="display:flex;align-items:center;gap:8px;margin:3px 0"><span style="width:70px" class="mu">Buổi ${b.soBuoi}</span>
+      <div style="flex:1;background:#e8ecf4;border-radius:6px"><div style="width:${b.tyLe}%;background:var(--pr);color:#fff;font-size:12px;padding:1px 6px;border-radius:6px;min-width:38px">${b.tyLe}%</div></div></div>`).join('')
+      || '<p class="mu">Chưa có buổi nào được mở.</p>'}
+    <h2 style="margin-top:14px">Từng sinh viên</h2>
+    <div style="overflow-x:auto"><table><tr><th>Mã SV</th><th>Họ tên</th><th>Có mặt</th><th>Muộn</th><th>Phép</th><th>Vắng</th><th>Chuyên cần</th><th>Mức</th></tr>
+    ${d.sinhVien.map(x => `<tr><td>${esc(x.maSinhVien)}</td><td>${esc(x.hoTen)}</td><td>${x.coMat}</td><td>${x.tre}</td><td>${x.coPhep}</td><td>${x.vang}</td>
+      <td>${(x.tyLe * 100).toFixed(0)}%</td><td><span class="tag ${MUC[x.mucDo][1]}" title="${esc(x.noiDung)}">${MUC[x.mucDo][0]}</span></td></tr>`).join('')}</table></div>
+    <p><button id="tao-cb">Gửi cảnh báo cho sinh viên</button> <button class="sec" id="xuat">Tải bảng CSV</button></p>
+    <p class="mu">Cảnh báo cũng tự động được gửi mỗi khi bạn đóng một buổi học.</p><div id="mtk" class="msg"></div></div>`;
+  $('#tao-cb').onclick = async () => {
+    try { const r = await api(`/api/canh-bao/lop/${lopId}/tao`, 'POST'); tb('mtk', r.thongBao, true); }
+    catch (e) { tb('mtk', e.message, false); }
+  };
+  $('#xuat').onclick = () => {
+    const dong = [['MaSV', 'HoTen', 'CoMat', 'Muon', 'CoPhep', 'Vang', 'ChuyenCan%', 'Muc'],
+      ...d.sinhVien.map(x => [x.maSinhVien, x.hoTen, x.coMat, x.tre, x.coPhep, x.vang, (x.tyLe * 100).toFixed(0), MUC[x.mucDo][0]])];
+    const csv = '\ufeff' + dong.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = `chuyen-can-${d.lop.maLop}.csv`; a.click();
+  };
+}
+
+/* ---------- Cảnh báo và thống kê (sinh viên) ---------- */
+async function taiCanhBao() {
+  try {
+    const chua = (await api('/api/canh-bao/cua-toi')).filter(c => !c.daDoc);
+    if (!chua.length) { $('#cb').innerHTML = ''; return; }
+    $('#cb').innerHTML = `<div class="card" style="border-color:var(--er)"><h2 style="color:var(--er)">Cảnh báo chuyên cần (${chua.length})</h2>
+      ${chua.slice(0, 5).map(c => `<p style="margin:6px 0"><b>${esc(c.maLop)}</b> - ${esc(c.tenMon)}: ${esc(c.noiDung)}</p>`).join('')}
+      <button class="sec" id="doc-cb">Đã hiểu, ẩn cảnh báo</button></div>`;
+    $('#doc-cb').onclick = async () => { try { await api('/api/canh-bao/da-doc-tat-ca', 'POST'); } catch {} taiCanhBao(); };
+  } catch {}
+}
+async function taiThongKe() {
+  const id = $('#lop').value, o = document.getElementById('tk-sv'); if (!id || !o) return;
+  try {
+    const x = (await api('/api/thong-ke/cua-toi')).find(y => y.lopHocPhanId == id);
+    if (!x) { o.innerHTML = ''; return; }
+    o.innerHTML = `<p>Vắng không phép: <b>${x.vang}</b>/${x.soBuoiVangToiDa} buổi cho phép · Chuyên cần <b>${(x.tyLe * 100).toFixed(0)}%</b>
+      <span class="tag ${MUC[x.mucDo][1]}">${MUC[x.mucDo][0]}</span></p>${x.mucDo !== 'BinhThuong' ? `<p class="mu">${esc(x.noiDung)}</p>` : ''}`;
+  } catch {}
+}
+
+/* ---------- Nhập điểm (giảng viên) - theo quy chế PDU: ĐHP = 0,4 x ĐBP + 0,6 x thi kết thúc ---------- */
+const chuDiem = t => t >= 8.5 ? 'A' : t >= 7.8 ? 'B+' : t >= 7 ? 'B' : t >= 6.3 ? 'C+' : t >= 5.5 ? 'C' : t >= 4.8 ? 'D+' : t >= 4 ? 'D' : 'F';
+const lam1 = x => Math.round(x * 10 + 1e-9) / 10;
+
+function veThongKeDiem(t) {
+  const o = document.getElementById('phan-bo'); if (!o) return;
+  o.innerHTML = !t.soCoDiem ? '' : `<h2 style="margin-top:14px">Phân bố điểm chữ (${t.soCoDiem} sinh viên có điểm, trung bình ${t.trungBinh}, đạt ${t.soDat}, chưa đạt ${t.soRot})</h2>`
+    + t.phanBo.map(p => `<div style="display:flex;align-items:center;gap:8px;margin:3px 0"><span style="width:34px">${p.chu}</span>
+      <div style="flex:1;background:#e8ecf4;border-radius:6px"><div style="width:${100 * p.soLuong / t.soCoDiem}%;background:var(--pr);color:#fff;font-size:12px;padding:1px 6px;border-radius:6px;min-width:22px">${p.soLuong}</div></div></div>`).join('');
+}
+
+async function xemDiem(lopId) {
+  dung();
+  let d;
+  try { d = await api(`/api/diem/lop/${lopId}`); }
+  catch (e) { $('#live').innerHTML = `<div class="card"><div class="msg er">${esc(e.message)}</div></div>`; return; }
+  const tc = d.lop.soTinChi, co2 = tc >= 4, coHs2 = tc >= 2;
+  const o = (c, v) => `<td><input class="${c}" type="number" min="0" max="10" step="0.1" value="${v ?? ''}" style="width:70px"></td>`;
+  const congThuc = tc <= 1 ? 'Điểm bộ phận = bài kiểm tra hệ số 1'
+    : tc <= 3 ? 'Điểm bộ phận = (KT hệ số 1 + 2 x KT hệ số 2) / 3' : 'Điểm bộ phận = (KT1 + KT2 + 2 x KT hệ số 2) / 4';
+  $('#live').innerHTML = `<div class="card"><h2>Nhập điểm - ${esc(d.lop.maLop)} ${esc(d.lop.tenMon)} (${tc} tín chỉ)</h2>
+    <p class="mu">Quy chế của trường: Điểm học phần = 0,4 x điểm bộ phận + 0,6 x điểm thi kết thúc. ${congThuc}. Điểm thang 10, làm tròn 1 chữ số thập phân; để trống nếu chưa có.
+    Chuyên cần không tính vào điểm, chỉ là điều kiện dự thi (tham gia từ 80% số buổi).</p>
+    <div style="overflow-x:auto"><table><tr><th>Mã SV</th><th>Họ tên</th><th>Tham gia</th><th>KT hệ số 1</th>${co2 ? '<th>KT hệ số 1 (bài 2)</th>' : ''}${coHs2 ? '<th>KT hệ số 2</th>' : ''}<th>Điểm bộ phận</th><th>Thi kết thúc</th><th>Điểm HP</th><th>Chữ</th></tr>
+    ${d.sinhVien.map(x => `<tr data-sv="${x.sinhVienId}"><td>${esc(x.maSinhVien)}</td>
+      <td>${esc(x.hoTen)}${x.duDieuKienThi ? '' : ' <span class="tag Vang" title="Tham gia dưới 80% số buổi hoặc vắng quá giới hạn">Chưa đủ ĐK dự thi</span>'}</td>
+      <td>${(x.tyLeChuyenCan * 100).toFixed(0)}%</td>${o('k1', x.kt1)}${co2 ? o('k2', x.kt2) : ''}${coHs2 ? o('h2', x.hs2) : ''}
+      <td class="dbp"></td>${o('tk', x.thiKetThuc)}<td class="hp"></td><td class="chu"></td></tr>`).join('')}</table></div>
+    <p><button id="luu-d">Lưu điểm</button> <button class="sec" id="xuat-d">Tải bảng CSV</button></p><div id="md" class="msg"></div><div id="phan-bo"></div></div>`;
+
+  const gt = (tr, c) => { const e = tr.querySelector('.' + c); return e && e.value !== '' ? +e.value : null; };
+  const dbp = (a, b, c) => tc <= 1 ? (a == null ? null : lam1(a))
+    : tc <= 3 ? (a == null || c == null ? null : lam1((a + 2 * c) / 3))
+    : (a == null || b == null || c == null ? null : lam1((a + b + 2 * c) / 4));
+  const capNhat = tr => {
+    const b = dbp(gt(tr, 'k1'), gt(tr, 'k2'), gt(tr, 'h2')), k = gt(tr, 'tk');
+    tr.querySelector('.dbp').textContent = b == null ? '' : b.toFixed(1);
+    const hp = b == null || k == null ? null : lam1(0.4 * b + 0.6 * k);
+    tr.querySelector('.hp').innerHTML = hp == null ? '' : `<b>${hp.toFixed(1)}</b>`;
+    tr.querySelector('.chu').innerHTML = hp == null ? '' : `<span class="tag ${hp >= 4 ? 'CoMat' : 'Vang'}">${chuDiem(hp)}</span>`;
+  };
+  document.querySelectorAll('#live tr[data-sv]').forEach(tr => { tr.querySelectorAll('input').forEach(i => i.oninput = () => capNhat(tr)); capNhat(tr); });
+  veThongKeDiem(d.thongKe);
+
+  $('#luu-d').onclick = async () => {
+    const ds = [...document.querySelectorAll('#live tr[data-sv]')].map(tr =>
+      ({ sinhVienId: +tr.dataset.sv, kt1: gt(tr, 'k1'), kt2: gt(tr, 'k2'), hs2: gt(tr, 'h2'), thiKetThuc: gt(tr, 'tk') }));
+    try { const r = await api(`/api/diem/lop/${lopId}`, 'PUT', { danhSach: ds }); tb('md', r.thongBao, true); veThongKeDiem(r.thongKe); }
+    catch (e) { tb('md', e.message, false); }
+  };
+  $('#xuat-d').onclick = () => {
+    const dong = [['MaSV', 'HoTen', 'KT1', 'KT2', 'HS2', 'DiemBoPhan', 'ThiKetThuc', 'DiemHP', 'DiemChu'],
+      ...[...document.querySelectorAll('#live tr[data-sv]')].map(tr => [tr.children[0].textContent, tr.children[1].textContent.replace('Chưa đủ ĐK dự thi', '').trim(),
+        gt(tr, 'k1') ?? '', gt(tr, 'k2') ?? '', gt(tr, 'h2') ?? '', tr.querySelector('.dbp').textContent, gt(tr, 'tk') ?? '', tr.querySelector('.hp').textContent, tr.querySelector('.chu').textContent])];
+    const csv = '\ufeff' + dong.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = `diem-${d.lop.maLop}.csv`; a.click();
+  };
+}
+
+/* ---------- Bảng điểm (sinh viên) ---------- */
+async function taiBangDiem() {
+  const o = document.getElementById('bd'); if (!o) return;
+  try {
+    const d = await api('/api/diem/cua-toi');
+    if (!d.hocKy.length) { o.innerHTML = '<p class="mu">Chưa có môn học nào.</p>'; return; }
+    o.innerHTML = `<p>Điểm trung bình chung tích lũy (thang 4): <b>${d.tichLuy.gpa4 ?? '-'}</b> · Tín chỉ tích lũy: <b>${d.tichLuy.tinChiTichLuy}</b></p>`
+      + d.hocKy.map(h => `<h2 style="margin-top:12px">${esc(h.tenHocKy)} <span class="mu">· ĐTB học kỳ (thang 4): ${h.gpa4 ?? '-'} · Tín chỉ đạt ${h.tinChiDat}/${h.tinChiDangKy}</span></h2>
+        <div style="overflow-x:auto"><table><tr><th>Lớp</th><th>Môn</th><th>TC</th><th>Bộ phận</th><th>Thi KT</th><th>Điểm HP</th><th>Chữ</th><th>Thang 4</th></tr>
+        ${h.monHoc.map(m => `<tr><td>${esc(m.maLop)}</td><td>${esc(m.tenMon)}</td><td>${m.soTinChi}</td><td>${m.diemBoPhan ?? ''}</td><td>${m.thiKetThuc ?? ''}</td>
+          <td><b>${m.diemHocPhan ?? '—'}</b></td><td>${m.diemChu ? `<span class="tag ${m.diemChu === 'F' ? 'Vang' : 'CoMat'}">${m.diemChu}</span>` : '<span class="mu">Chưa có</span>'}</td><td>${m.he4 ?? ''}</td></tr>`).join('')}</table></div>`).join('');
+  } catch (e) { o.innerHTML = `<div class="msg er">${esc(e.message)}</div>`; }
+}
+
+/* ---------- Sinh viên ---------- */
+async function hienSinhVien() {
+  const ds = await api('/api/lop-hoc-phan/cua-toi');
+  $('#app').innerHTML = `<div id="cb"></div><div class="card"><h2>Điểm danh</h2>
+    <p class="mu">Bấm "Mở camera", đưa mã QR trên màn hình của giảng viên vào khung hình. Cần cho phép truy cập camera và vị trí.</p>
+    <video id="vid" class="hide" playsinline muted></video>
+    <p><button id="cam">Mở camera quét mã</button></p>
+    <label>Hoặc dán mã QR vào đây</label>
+    <div class="row"><input id="tay" placeholder="QLHV|..."><button class="sec" id="gui" style="flex:0 0 auto">Gửi mã</button></div>
+    <div id="m" class="msg"></div></div>
+    <div class="card"><h2>Lịch sử điểm danh</h2>
+    <select id="lop">${ds.map(l => `<option value="${l.id}">${esc(l.maLop)} - ${esc(l.tenMon)}</option>`).join('') || '<option value="">Chưa có lớp</option>'}</select>
+    <div id="tk-sv"></div><div id="ls"></div></div>
+    <div class="card"><h2>Bảng điểm</h2><div id="bd"></div></div>`;
+  $('#cam').onclick = moCam;
+  $('#gui').onclick = () => { const v = $('#tay').value.trim(); v ? guiMa(v) : tb('m', 'Hãy dán mã QR vào ô trước.', false); };
+  $('#lop').onchange = () => { taiLichSu(); taiThongKe(); };
+  taiLichSu(); taiThongKe(); taiCanhBao(); taiBangDiem();
+}
+
+async function moCam() {
+  if (!window.isSecureContext) return tb('m', 'Cần mở trang bằng HTTPS (hoặc localhost) để dùng camera.', false);
+  try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } }); }
+  catch { return tb('m', 'Không mở được camera (cần cho phép quyền camera). Hãy dán mã vào ô bên dưới.', false); }
+  try { await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch {}
+  const v = $('#vid'); v.srcObject = stream; v.classList.remove('hide'); await v.play();
+  dangQuet = true; tb('m', 'Đang quét... hãy đưa mã QR vào khung hình, giữ máy chắc tay.', true);
+  const batDau = Date.now(); let daNhac = false;
+  // Ưu tiên bộ đọc QR có sẵn của trình duyệt (Chrome Android), dự phòng là thư viện jsQR
+  const boDoc = ('BarcodeDetector' in window) ? new BarcodeDetector({ formats: ['qr_code'] }) : null;
+  const cv = document.createElement('canvas'), cx = cv.getContext('2d', { willReadFrequently: true });
+  const lap = async () => {
+    if (!dangQuet) return;
+    try {
+      if (v.readyState >= 2 && v.videoWidth) {
+        let ma = null;
+        if (boDoc) { const kq = await boDoc.detect(v); if (kq.length) ma = kq[0].rawValue; }
+        else if (typeof jsQR === 'function') {
+          cv.width = v.videoWidth; cv.height = v.videoHeight; cx.drawImage(v, 0, 0);
+          const im = cx.getImageData(0, 0, cv.width, cv.height);
+          const k = jsQR(im.data, im.width, im.height, { inversionAttempts: 'dontInvert' });
+          if (k) ma = k.data;
+        } else { tatCam(); return tb('m', 'Chưa tải được thư viện đọc QR (kiểm tra mạng). Hãy dán mã vào ô bên dưới.', false); }
+        if (ma && ma.startsWith('QLHV|')) { tatCam(); guiMa(ma); return; }
+      }
+    } catch {}
+    if (!daNhac && Date.now() - batDau > 20000) {
+      daNhac = true;
+      tb('m', 'Chưa đọc được mã. Hãy tăng độ sáng màn hình, giữ máy cách 20-30 cm, tránh bị lóa; hoặc dán mã vào ô bên dưới.', false);
+    }
+    setTimeout(lap, 150);
+  };
+  lap();
+}
+function tatCam() {
+  dangQuet = false; stream?.getTracks().forEach(t => t.stop()); stream = null;
+  const v = document.getElementById('vid'); if (v) v.classList.add('hide');
+}
+
+async function guiMa(ma) {
+  tb('m', 'Đang lấy vị trí và gửi điểm danh...', true);
+  let p = {};
+  try { const c = await viTri(); p = { viDo: lam7(c.latitude), kinhDo: lam7(c.longitude) }; } catch {}
+  try {
+    const d = await api('/api/diem-danh/quet', 'POST', { maQr: ma, ...p });
+    tb('m', d.thongBao + (d.khoangCachMet != null ? ` (cách phòng học ${d.khoangCachMet} m)` : ''), true);
+    taiLichSu();
+  } catch (e) { tb('m', e.message, false); }
+}
+
+async function taiLichSu() {
+  const id = $('#lop').value; if (!id) { $('#ls').innerHTML = ''; return; }
+  try {
+    const d = await api('/api/diem-danh/cua-toi?lopHocPhanId=' + id), t = d.tongKet;
+    $('#ls').innerHTML = `<p>Có mặt ${t.coMat} · Muộn ${t.tre} · Có phép ${t.coPhep} · Vắng ${t.vang} / ${t.soBuoi} buổi</p>
+      <table><tr><th>Buổi</th><th>Ngày</th><th>Trạng thái</th></tr>
+      ${d.danhSach.map(x => { const cho = x.trangThai === 'Vang' && x.trangThaiBuoi !== 'DaDong';
+        return `<tr><td>${x.soBuoi}</td><td>${x.ngayHoc}</td><td><span class="tag ${cho ? '' : x.trangThai}">${cho ? 'Chưa điểm danh' : NHAN[x.trangThai]}</span></td></tr>`; }).join('')
+        || '<tr><td colspan="3" class="mu">Chưa có buổi học nào được mở.</td></tr>'}</table>`;
+  } catch (e) { $('#ls').innerHTML = `<div class="msg er">${esc(e.message)}</div>`; }
+}
+
+token && user ? vaoTrangChu() : hienDangNhap();
+</script>
+</body>
+</html>
